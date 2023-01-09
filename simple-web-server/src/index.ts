@@ -3,7 +3,7 @@ import express, { Express, Request, Response } from "express"
 const app: Express = express();
 
 app.get("/", (req: Request, res: Response) => {
-    res.send("EXPRESS + TYPESCRIPT BASIC SERVER");
+    res.sendFile(__dirname + "/views/index.html")
 })
 
 app.listen(3000, () => {
