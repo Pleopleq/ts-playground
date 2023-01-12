@@ -1,6 +1,10 @@
 import express, { Express, Request, Response } from "express";
 import dotenv from "dotenv";
 import { Client } from "pg";
+import crypto from "crypto"
+import passport from "passport"
+import passportLocal from "passport-local"
+
 dotenv.config();
 
 const client = new Client({
@@ -11,6 +15,24 @@ const client = new Client({
   database: process.env.DB_NAME,
 });
 
+passport.use(new passportLocal.Strategy(function verify(username: string, password: string, cb: Function) {
+  client.query('SELECT * FROM users WHERE name = ?', [username], function (err: any, row: any) {
+    if (err) { return cb(err); }
+
+    if (!row) { return cb(null, false, { message: 'Incorrect username or password.' }); }
+
+    crypto.pbkdf2(password, row.salt, 310000, 32, 'sha256', function (err, hashedPassword) {
+      if (err) { return cb(err); }
+
+      if (!crypto.timingSafeEqual(row.hashed_password, hashedPassword)) {
+        return cb(null, false, { message: 'Incorrect username or password.' });
+      }
+
+      return cb(null, row);
+    });
+  });
+}));
+
 const app: Express = express();
 app.use(express.urlencoded({ extended: true }));
 
@@ -18,24 +40,10 @@ app.get("/", (req: Request, res: Response) => {
   res.sendFile(__dirname + "/views/index.html");
 });
 
-app.post("/", async (req: Request, res: Response) => {
-  const userLoggedRes = await client.query(
-    "SELECT * FROM users WHERE name = $1",
-    [req.body.username]
-  );
-
-  if (
-    userLoggedRes.rows.length === 0 ||
-    userLoggedRes.rows[0].password !== req.body.password
-  ) {
-    return res.status(500).send(`
-    <h1>Wrong password or username</h1>
-    <a href="/">Go to home</a>
-    `);
-  }
-
-  res.status(200).send("Welcome");
-});
+app.post('/login/password', passport.authenticate('local', {
+  successRedirect: '/',
+  failureRedirect: '/login'
+}));
 
 app.get("/register", (req: Request, res: Response) => {
   res.sendFile(__dirname + "/views/register.html");
