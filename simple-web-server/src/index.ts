@@ -1,9 +1,15 @@
-import express, { Express, Request, Response } from "express";
+import express, { Express, NextFunction, Request, Response } from "express";
 import dotenv from "dotenv";
 import { Client } from "pg";
 import crypto from "crypto"
 import passport from "passport"
 import passportLocal from "passport-local"
+import session from 'express-session';
+
+type User = {
+  _id?: number,
+  _name?: string
+}
 
 dotenv.config();
 
@@ -16,7 +22,7 @@ const client = new Client({
 });
 
 passport.use(new passportLocal.Strategy(function verify(username: string, password: string, cb: Function) {
-  client.query('SELECT * FROM users WHERE name = ?', [username], function (err: any, row: any) {
+  client.query('SELECT * FROM users WHERE name = $1', [username], function (err: any, row: any) {
     if (err) { return cb(err); }
 
     if (!row) { return cb(null, false, { message: 'Incorrect username or password.' }); }
@@ -34,37 +40,59 @@ passport.use(new passportLocal.Strategy(function verify(username: string, passwo
 }));
 
 const app: Express = express();
+app.use(session({
+  secret: 'keyboard cat',
+  resave: false,
+  saveUninitialized: false,
+}));
+
+app.use(passport.authenticate('session'));
 app.use(express.urlencoded({ extended: true }));
+
+passport.serializeUser(function(user: User, cb) {
+  process.nextTick(function() {
+    cb(null,{ id: user._id, username: user._name});
+  });
+});
+
+passport.deserializeUser(function(user: User, cb) {
+  process.nextTick(function() {
+    return cb(null, user);
+  });
+});
 
 app.get("/", (req: Request, res: Response) => {
   res.sendFile(__dirname + "/views/index.html");
 });
 
 app.post('/login/password', passport.authenticate('local', {
-  successRedirect: '/',
-  failureRedirect: '/login'
+  successRedirect: '/dashboard',
+  failureRedirect: '/'
 }));
 
 app.get("/register", (req: Request, res: Response) => {
   res.sendFile(__dirname + "/views/register.html");
 });
 
-app.post("/register", async (req: Request, res: Response) => {
-  await client.query(
-    "INSERT INTO users(name, password) VALUES($1, $2)",
-    [req.body.username, req.body.password]
-  );
+app.post("/register", (req: Request, res: Response, next: NextFunction) => {
+  const salt = crypto.randomBytes(16);
+  crypto.pbkdf2(req.body.password, salt, 310000, 32, 'sha256', async function(err, hashedPassword) {
+    if (err) { return next(err); }
 
-  res.send(`
-  <h1>User has been succesfully registered</h1>
-  <a href="/">Go to home</a>
-  `);
-});
+    await client.query(
+      "INSERT INTO users(name, password, salt) VALUES($1, $2, $3) RETURNING *",
+      [req.body.username, hashedPassword.toString("hex"), salt.toString("hex")]
+    ) 
+    .then(data => {
+      req.login(data.rows[0], function(err) {
+        if (err) { return next(err); }
 
-app.get("/users", async (req: Request, res: Response) => {
-  const usersRes = await client.query("SELECT * FROM users;");
-  res.json(usersRes.rows);
-});
+        res.redirect('/dashboard');
+      });
+    })
+    .catch(e => console.error(e.stack))
+  })
+})
 
 app.listen(process.env.SERVER_PORT, () => {
   console.log(
